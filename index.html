@@ -1,12 +1,66 @@
+<!DOCTYPE html>
 <html>
   <head>
     <title>A Patrician is You</title>
   </head>
   <body>
+    <label>
+      .pls file:
+      <input type="file" id="pls-file" />
+    </label>
+    <button id="upload-submit">Upload</button>
+    <label>
+      .pls url:
+      <input type="text" id="pls-url"/>
+      <button id="pls-url-submit">Stream</button>
+    </label>
+    <label>
+      SHOUTcast URL:
+      <input type="text" id="shourcast-url"/>
+      <button id="shoutcast-submit">Stream</button>
+    </label>
+    <!--
     <audio controls>
       <source src="/stream/stream.mutantradio.org:8732/s.mp3" />
     </audio>
+    -->
     <script>
+      function startStream(encurl) {
+        var player = document.createElement('audio')
+
+        player.controls = true
+        player.src = '/stream/' + encurl + '/s.mp3'
+        player.play()
+        document.body.appendChild(player)
+
+        document.location.hash = encurl
+      }
+
+      function loadPlsFromUrl(e) {
+        var url = document.getElementById('pls-url').value,
+          xhr = new XMLHttpRequest();
+
+        xhr.open('POST', '/parse-pls/', true);
+        xhr.setRequestHeader('Content-type', 'application/x-www-form-urlencoded');
+        xhr.onload = function () {
+          var res = JSON.parse(this.responseText)
+          startStream(res)
+        };
+        xhr.send('playlist_url='+ url);
+      }
+
+      document.addEventListener('DOMContentLoaded', function() {
+        if (document.location.hash) {
+          // If there's a frag fire up the player and fuck the rest.
+          startStream(document.location.hash.substr(1))
+          return
+        }
+
+        document.getElementById('pls-url').addEventListener('keyup', function(e) {
+          if (e.keyCode == 13) { loadPlsFromUrl() }
+        })
+        document.getElementById('pls-url-submit').addEventListener('click', loadPlsFromUrl)
+      })
     </script>
   </body>
 </html>
