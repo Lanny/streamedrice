@@ -1,8 +1,14 @@
 #! /usr/bin/python
+from gevent import monkey; monkey.patch_all()
+
 import urllib2
 import re
 import json
 from flask import Flask, Response, request
+
+from gevent.pywsgi import WSGIServer
+from gevent import coros
+from gevent.event import AsyncResult
 
 class IcyHandler(urllib2.HTTPHandler):
   def http_response(self, req, res):
@@ -20,6 +26,8 @@ class IcyHandler(urllib2.HTTPHandler):
       res.headers.addheader(*new_header.split(':', 1))
 
     return res
+
+stream_events = {}
 
 app = Flask(__name__)
 
@@ -42,6 +50,7 @@ def parse_pls():
 
 @app.route('/stream/<path:url>/s.mp3')
 def stream(url):
+  encurl = url
   url = url.decode('Base64')
 
   if 'http://' not in url:
@@ -63,10 +72,31 @@ def stream(url):
       metadata_length = ord(res.read(1)) * 16
       if metadata_length:
         metadata = res.read(metadata_length)
+
+        update_event = stream_events.get(encurl)
+        if update_event:
+          update_event.set(metadata)
+
+        stream_events[encurl] = AsyncResult()
+
         print metadata
 
   return Response(gen(url), mimetype='audio/mpeg')
 
+@app.route('/metadata/<stream>/d.json')
+def metadata(stream):
+  print 'HERE'
+  if stream not in stream_events:
+    stream_events[stream] = AsyncResult()
+
+  # Return control until there's an update
+  metadata = stream_events[stream].get()
+
+  return Response(json.dumps(metadata), mimetype='application/json')
+
 if __name__ == '__main__':
   app.debug = True
-  app.run(host="0.0.0.0")
+  #app.run(host="0.0.0.0")
+
+  http_server = WSGIServer(('', 5000), app)
+  http_server.serve_forever()
