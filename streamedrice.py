@@ -71,7 +71,15 @@ def stream(url):
 
       metadata_length = ord(res.read(1)) * 16
       if metadata_length:
-        metadata = res.read(metadata_length)
+        print 'laaa'
+        entries = res.read(metadata_length).split(';')
+        metadata = {}
+        for metadatum in entries:
+          if 'StreamTitle' in metadatum:
+            metadatum = metadatum.split('=')[1]
+            artist, song = metadatum[1:-1].split('-')
+            metadata['artist'] = artist
+            metadata['song'] = song
 
         update_event = stream_events.get(encurl)
         if update_event:
@@ -85,13 +93,13 @@ def stream(url):
 
 @app.route('/metadata/<stream>/d.json')
 def metadata(stream):
-  print 'HERE'
   if stream not in stream_events:
     stream_events[stream] = AsyncResult()
 
   # Return control until there's an update
   metadata = stream_events[stream].get()
 
+  print 'hai'
   return Response(json.dumps(metadata), mimetype='application/json')
 
 if __name__ == '__main__':

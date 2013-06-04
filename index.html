@@ -28,6 +28,16 @@
         border-radius: 5px;
         overflow: hidden;
       }
+      .track {
+        background-color: #137795;
+        border-radius: 5px;
+        width: 100%;
+        margin-bottom: 10px;
+        padding: 10px 0;
+      }
+      #tracks {
+        margin-top: 20px;
+      }
       #spinner {
         width: 300px;
         height: 300px;
@@ -123,6 +133,8 @@
           <div></div>
         </div>
       </div>
+      <div id="tracks">
+      </div>
     </div>
 
     <script>
@@ -189,17 +201,28 @@
 
       function pollForMetadata() {
         var url = unescape(document.location.hash.substr(1)),
-          xhr = new XMLHttpRequest();
+          xhr = new XMLHttpRequest()
 
         xhr.open('GET', '/metadata/' + url + '/d.json', true);
-        xhr.onload = function () {
+        xhr.addEventListener("load", function () {
           var res = JSON.parse(this.responseText)
           if (res) {
+            el = document.createElement('div')
+            el.innerHTML = '<span class="song">' + res.song + '</span><br />' +
+            '<span class="artist">' + res.artist + '</span>'
+
+            el.className = 'track'
+
+            var tracks = document.getElementById('tracks')
+
+            tracks.insertBefore(el, tracks.firstChild)
+
             console.log(res)
           }
 
-          pollForMetadata()
-        };
+          setTimeout(pollForMetadata, 500)
+        })
+
         xhr.send();
       }
 
@@ -216,7 +239,7 @@
         xhr.send('playlist_url='+ url);
       }
 
-      document.addEventListener('DOMContentLoaded', function() {
+      document.addEventListener('DOMContentLoaded', function ready() {
         if (document.location.hash) {
           // If there's a frag fire up the player
           startStream(unescape(document.location.hash.substr(1)))
