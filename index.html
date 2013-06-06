@@ -208,7 +208,7 @@
         }
         button.classList.add('play')
         
-        audioPlayer.pause()
+        audioPlayer.volume = 0
       }
 
       function play() {
@@ -222,7 +222,7 @@
         }
         button.classList.add('pause')
 
-        audioPlayer.play()
+        audioPlayer.volume = 1
       }
 
       function pollForMetadata() {
@@ -285,7 +285,9 @@
         document.getElementById('pls-url-submit').addEventListener('click', loadPlsFromUrl)
 
         document.getElementById('play-button').addEventListener('click', function(e) {
-          if (audioPlayer.paused) play()
+          if (document.getElementById('play-button').classList.contains('play')) {
+            play()
+          }
           else pause()
         })
 
