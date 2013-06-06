@@ -130,9 +130,11 @@
       <small>Internet radio in your browser</small></h1>
     <div id="setup">
       <div class="select-method">
-        <h2>Upload a .pls file:</h2>
-        <input type="file" id="pls-file" />
-        <button id="upload-submit">Upload</button>
+        <form method="post" enctype="multipart/form-data" action="/parse-pls-file/">
+          <h2>Upload a .pls file:</h2>
+          <input type="file" name="pls" id="pls-file" />
+          <input type="submit" id="upload-submit" value="Upload" />
+        </form>
       </div>
       <div class="select-method">
         <h2>Link to a .pls file</h2>

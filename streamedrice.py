@@ -5,7 +5,7 @@ import urllib2
 from urllib import urlencode
 import re
 import json
-from flask import Flask, Response, request
+from flask import Flask, Response, request, redirect
 
 from gevent.pywsgi import WSGIServer
 from gevent import coros
@@ -23,7 +23,6 @@ class IcyHandler(urllib2.HTTPHandler):
       if not new_header:
         break
 
-      print new_header
       res.headers.addheader(*new_header.split(':', 1))
 
     return res
@@ -31,6 +30,14 @@ class IcyHandler(urllib2.HTTPHandler):
 stream_events = {}
 
 app = Flask(__name__)
+app.config['MAX_CONTENT_LENGTH'] = 54 * 1024
+
+def find_stream_url(pls_string):
+  '''Return the Base64 encoded stream url from a .pls file'''
+  stream_url = re.search('File1=(.+?)\n', pls_string).group(1)
+  stream_url = stream_url.encode('Base64')
+
+  return stream_url.strip()
 
 @app.route('/')
 def index():
@@ -43,11 +50,17 @@ def parse_pls():
 
   url = request.form['playlist_url']
   res = urllib2.urlopen(url)
-  playlist = res.read()
-  stream_url = re.search('File1=(.+?)\n', playlist).group(1)
-  stream_url = stream_url.encode('Base64')
+  stream_url = find_stream_url(res.read())
 
   return Response(json.dumps(stream_url), mimetype='application/json')
+
+@app.route('/parse-pls-file/', methods=['POST'])
+def parse_plse_file():
+  pls_string = request.files['pls'].stream.read()
+  stream_url = find_stream_url(pls_string)
+
+  print stream_url
+  return redirect('/#' + stream_url)
 
 @app.route('/stream/<path:url>/s.mp3')
 def stream(url):
@@ -99,15 +112,17 @@ def stream(url):
           last_fm_data = json.loads(resp.read())
           resp.close()
 
-          metadata['album_art'] = last_fm_data['track']['album']['image'][0]['#text']
+          try:
+            metadata['album_art'] = last_fm_data['track']['album']['image'][0]['#text']
+
+          except KeyError:
+            pass
 
         update_event = stream_events.get(encurl)
         if update_event:
           update_event.set(metadata)
 
         stream_events[encurl] = AsyncResult()
-
-        print metadata
 
   return Response(gen(url), mimetype='audio/mpeg')
 
