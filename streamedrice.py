@@ -2,6 +2,7 @@
 from gevent import monkey; monkey.patch_all()
 
 import urllib2
+from urllib import urlencode
 import re
 import json
 from flask import Flask, Response, request
@@ -71,15 +72,34 @@ def stream(url):
 
       metadata_length = ord(res.read(1)) * 16
       if metadata_length:
-        print 'laaa'
         entries = res.read(metadata_length).split(';')
         metadata = {}
         for metadatum in entries:
-          if 'StreamTitle' in metadatum:
-            metadatum = metadatum.split('=')[1]
-            artist, song = metadatum[1:-1].split('-')
-            metadata['artist'] = artist
-            metadata['song'] = song
+          try:
+            if 'StreamTitle' in metadatum:
+              metadatum = metadatum.split('=')[1]
+              artist, song = metadatum[1:-1].split('-')
+              metadata['artist'] = artist
+              metadata['song'] = song
+
+          except:
+            # Ehh whatever, wait for the next round of metadata.
+            print entries
+
+        if settings['Last.fm Integration']:
+          params = {
+            'method':'track.getInfo',
+            'artist':metadata['artist'],
+            'track':metadata['song'],
+            'api_key':settings['key'],
+            'format':'json'
+            }
+
+          resp = urllib2.urlopen('http://ws.audioscrobbler.com/2.0/?'+ urlencode(params))
+          last_fm_data = json.loads(resp.read())
+          resp.close()
+
+          metadata['album_art'] = last_fm_data['track']['album']['image'][0]['#text']
 
         update_event = stream_events.get(encurl)
         if update_event:
@@ -99,10 +119,17 @@ def metadata(stream):
   # Return control until there's an update
   metadata = stream_events[stream].get()
 
-  print 'hai'
   return Response(json.dumps(metadata), mimetype='application/json')
 
 if __name__ == '__main__':
+  try:
+    f = open('settings.json', 'r')
+    settings = json.loads(f.read())
+    f.close()
+
+  except IOError:
+    settings = {'Last.fm Integration':False}
+
   app.debug = True
   #app.run(host="0.0.0.0")
 

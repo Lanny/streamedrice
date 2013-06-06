@@ -28,15 +28,33 @@
         border-radius: 5px;
         overflow: hidden;
       }
+
       .track {
         background-color: #137795;
         border-radius: 5px;
         width: 100%;
         margin-bottom: 10px;
         padding: 10px 0;
+        overflow: hidden;
       }
+      .track > img {
+        float: left;
+        margin-left: 10px;
+        height: 64px;
+        width: 64px;
+      }
+      .song {
+        margin-left: 10px;
+        line-height: 35px;
+      }
+      .artist {
+        margin-left: 10px;
+        font-weight: 700;
+      }
+
       #tracks {
         margin-top: 20px;
+        max-height: 600px;
       }
       #spinner {
         width: 300px;
@@ -98,6 +116,13 @@
       .play > #pause-symbol { display: none; }
       .pause > #play-symbol { display: none; }
       .pause > #pause-symbol { display: block; }
+
+      #cr-notice {
+        font-size: 10px;
+        position: fixed;
+        right: 5px;
+        bottom: 5px;
+      }
     </style>
   </head>
   <body>
@@ -137,6 +162,7 @@
       </div>
     </div>
 
+    <span id="cr-notice">&copy; 2013 Ryan Jenkins</span>
     <script>
       // Global vars to track play state
       var audioPlayer = null
@@ -207,10 +233,18 @@
         xhr.addEventListener("load", function () {
           var res = JSON.parse(this.responseText)
           if (res) {
-            el = document.createElement('div')
-            el.innerHTML = '<span class="song">' + res.song + '</span><br />' +
-            '<span class="artist">' + res.artist + '</span>'
+            var el = document.createElement('div'),
+              htmlString = ''
 
+            if (res.album_art) {
+              htmlString += '<img src="' + res.album_art + '" /> <div>'
+            }
+            htmlString += '<span class="song">' + res.song + '</span><br />' +
+              '<span class="artist">' + res.artist + '</span>'
+
+            if (res.album_art) htmlString += '</div>'
+
+            el.innerHTML = htmlString
             el.className = 'track'
 
             var tracks = document.getElementById('tracks')
