@@ -1,33 +1,130 @@
 #! /usr/bin/python
-from gevent import monkey; monkey.patch_all()
 
 import urllib2
+import socket
 from urllib import urlencode
 import re
 import json
 from flask import Flask, Response, request, redirect
 
+from gevent import monkey, spawn, sleep
 from gevent.pywsgi import WSGIServer
 from gevent import coros
-from gevent.event import AsyncResult
+from gevent.event import AsyncResult, Event
 
-class IcyHandler(urllib2.HTTPHandler):
-  def http_response(self, req, res):
-    # Hacky workaround for urllib not grasping SHOUTcast's retarded
-    # response headers.
+monkey.patch_all()
 
-    # Pop the first line off because it's what chokes urllib2
-    res.readline()
-    while 1:
-      new_header = res.readline().strip()
-      if not new_header:
-        break
+class RiceException(Exception):
+  pass
 
-      res.headers.addheader(*new_header.split(':', 1))
+class StreamHandler(object):
+  def __init__(self, stream_url):
+    '''Open a connection to the remote stream and read through the headers.'''
+    print stream_url
+    url_data = re.match(r'(http://)?(?P<host>.+?\.\w{2,5})(?P<path>/.+?)?:(?P<port>\d+)/?', stream_url)
+    print url_data.groups()
 
-    return res
+    self._buf = ''
+    self._metabuf = ''
+    self._chunk_read = 0
 
-stream_events = {}
+    self._cont = False
+    self._data_available = Event()
+    self._metadata_available = Event()
+
+    self._s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    self._s.connect((url_data.group('host'), int(url_data.group('port'))))
+
+    path = url_data.group('path')
+    if not path: path = '/'
+
+    request = '\r\n'.join([
+      'GET %s HTTP/1.1' % path,
+      'Icy-MetaData: 1',
+      '\r\n'
+    ])
+
+    print repr(request)
+
+    self._s.send(request)
+
+    while '\r\n\r\n' not in self._buf:
+      self._buf += self._s.recv(64)
+
+    raw_headers, self._buf = self._buf.split('\r\n\r\n', 1)
+    self.headers = raw_headers.split('\r\n')
+
+    for idx, header in enumerate(self.headers[1:]):
+      self.headers[idx+1] = tuple(header.split(':', 1))
+
+    print self.headers
+    if '200' not in self.headers[0]:
+      raise RiceException('HTTP Error: %s' % self.headers[0])
+
+    self._metaint = int(filter(lambda x: x[0] == 'icy-metaint', self.headers)[0][1])
+    self._chunk_read = len(self._buf)
+
+  def read_data(self):
+    '''Sleep until some music data is available forthis stream.'''
+    self._data_available.wait()
+    return self._buf
+
+  def read_metadata(self):
+    '''Sleep until some metadata is available for this stream.'''
+    self._metadata_available.wait()
+    return self._metabuf
+
+  def pump_forever(self):
+    '''So long as the _cont flag is true and the socket remails open, read from
+    it and publish to anyone who will listen. That includes metadata.'''
+    self._cont = True
+    while self._cont:
+      while (self._chunk_read < self._metaint):
+        self._buf = self._s.recv(self._metaint - self._chunk_read)
+        self._chunk_read += len(self._buf)
+
+        self._data_available.set()
+        self._data_available.clear()
+        sleep(0)
+
+      self._chunk_read = 0
+
+      mlen = ord(self._s.recv(1))*16
+      if mlen > 0:
+        self._metabuf = ''
+        while (len(self._metabuf) < mlen):
+          self._metabuf += self._s.recv(mlen - len(self._metabuf))
+
+        self._metadata_available.set()
+        self._metadata_available.clear()
+        sleep(0)
+
+
+def gen(encurl, url):
+  '''The generator that we throw at clients for the .mp3 stream'''
+  stream = streams.get(encurl)
+  if not stream:
+    stream = StreamHandler(url)
+    streams[encurl] = stream
+    spawn(stream.pump_forever)
+
+  local_buf = ''
+  while 1:
+    # Build a buffer this side because Windows flips shit if you send small 
+    # messages too quickly (I think)
+    local_buf += stream.read_data()
+
+    if len(local_buf) > 44998:
+      yield local_buf
+      local_buf = ''
+
+def process_metadata(raw_metadata):
+  '''Parse raw metadata into clean JSON and fetch Last.fm data if possible. Needs
+  to be run as a seperate eventlet because of possible API calls.'''
+  pass
+
+# b64 encoded stream URLs -> StreamHandler map shared by whole app.
+streams = {}
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 54 * 1024
@@ -62,78 +159,21 @@ def parse_plse_file():
   print stream_url
   return redirect('/#' + stream_url)
 
-@app.route('/stream/<path:url>/s.mp3')
+@app.route('/stream/<url>/s.mp3')
 def stream(url):
   encurl = url
   url = url.decode('Base64')
 
-  if 'http://' not in url:
-    url = 'http://' + url
-
-  def gen(url):
-    req = urllib2.Request(url)
-    req.add_header('Icy-MetaData', '1')
-
-    opener = urllib2.build_opener(IcyHandler())
-    res = opener.open(req)
-
-    metadata_interval = int(res.headers['icy-metaint'])
-    metadata_string = ''
-
-    while 1:
-      yield res.read(metadata_interval)
-
-      metadata_length = ord(res.read(1)) * 16
-      if metadata_length:
-        entries = res.read(metadata_length).split(';')
-        metadata = {}
-        for metadatum in entries:
-          try:
-            if 'StreamTitle' in metadatum:
-              metadatum = metadatum.split('=')[1]
-              artist, song = metadatum[1:-1].split('-')
-              metadata['artist'] = artist
-              metadata['song'] = song
-
-          except:
-            # Ehh whatever, wait for the next round of metadata.
-            print entries
-
-        if settings['Last.fm Integration']:
-          params = {
-            'method':'track.getInfo',
-            'artist':metadata['artist'],
-            'track':metadata['song'],
-            'api_key':settings['key'],
-            'format':'json'
-            }
-
-          resp = urllib2.urlopen('http://ws.audioscrobbler.com/2.0/?'+ urlencode(params))
-          last_fm_data = json.loads(resp.read())
-          resp.close()
-
-          try:
-            metadata['album_art'] = last_fm_data['track']['album']['image'][0]['#text']
-
-          except KeyError:
-            pass
-
-        update_event = stream_events.get(encurl)
-        if update_event:
-          update_event.set(metadata)
-
-        stream_events[encurl] = AsyncResult()
-
-  return Response(gen(url), mimetype='audio/mpeg')
+  return Response(gen(encurl, url), mimetype='audio/mpeg')
 
 @app.route('/metadata/<stream>/d.json')
-def metadata(stream):
-  if stream not in stream_events:
-    stream_events[stream] = AsyncResult()
+def metadata(stream_url):
+  '''Return json encoded metadata for the current track on this stream'''
+  stream = streams.get(stream_url)
+  if not stream:
+    return 'Fuck off pleb'
 
-  # Return control until there's an update
-  metadata = stream_events[stream].get()
-
+  metadata = stream.read_metadata()
   return Response(json.dumps(metadata), mimetype='application/json')
 
 if __name__ == '__main__':
