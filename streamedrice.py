@@ -28,6 +28,7 @@ class StreamHandler(object):
     self._metabuf = ''
     self._metadata_json = ''
     self._chunk_read = 0
+    self._subscribers = 0
 
     self._cont = False
     self._data_available = Event()
@@ -67,7 +68,13 @@ class StreamHandler(object):
 
   def read_data(self):
     '''Sleep until some music data is available forthis stream.'''
+    # Keep track of this subscriber count, it it's ever zero when it comes time
+    # to write data to the clients, the stream is aborted.
+    self._subscribers += 1
+
     self._data_available.wait()
+
+    self._subscribers -= 1
     return self._buf
 
   def read_metadata(self, blocking=True):
@@ -86,6 +93,12 @@ class StreamHandler(object):
         self._buf = self._s.recv(self._metaint - self._chunk_read)
         self._chunk_read += len(self._buf)
 
+        # Check if there are any subscribers for this stream, if not we terminate
+        # this stream until someone new subscribes.
+        if self._subscribers < 1:
+          print 'No active subscribes, terminateing stream.'
+          return
+
         self._data_available.set()
         self._data_available.clear()
         sleep(0)
@@ -95,7 +108,7 @@ class StreamHandler(object):
       mlen = ord(self._s.recv(1))*16
       if mlen > 0:
         self._metabuf = ''
-        while (len(self._metabuf) < mlen):
+        while len(self._metabuf) < mlen:
           self._metabuf += self._s.recv(mlen - len(self._metabuf))
 
         # Run this in another eventlet because we're probs going to make a last.fm
