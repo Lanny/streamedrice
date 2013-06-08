@@ -10,7 +10,7 @@ from flask import Flask, Response, request, redirect
 from gevent import monkey, spawn, sleep
 from gevent.pywsgi import WSGIServer
 from gevent import coros
-from gevent.event import AsyncResult, Event
+from gevent.event import Event
 
 monkey.patch_all()
 
@@ -26,6 +26,7 @@ class StreamHandler(object):
 
     self._buf = ''
     self._metabuf = ''
+    self._metadata_json = ''
     self._chunk_read = 0
 
     self._cont = False
@@ -69,10 +70,12 @@ class StreamHandler(object):
     self._data_available.wait()
     return self._buf
 
-  def read_metadata(self):
+  def read_metadata(self, blocking=True):
     '''Sleep until some metadata is available for this stream.'''
-    self._metadata_available.wait()
-    return self._metabuf
+    if blocking:
+      self._metadata_available.wait()
+
+    return self._metadata_json
 
   def pump_forever(self):
     '''So long as the _cont flag is true and the socket remails open, read from
@@ -95,10 +98,49 @@ class StreamHandler(object):
         while (len(self._metabuf) < mlen):
           self._metabuf += self._s.recv(mlen - len(self._metabuf))
 
-        self._metadata_available.set()
-        self._metadata_available.clear()
+        # Run this in another eventlet because we're probs going to make a last.fm
+        # call and we don't want to get in the way of actual music loading.
+        spawn(self.process_metadata, self._metabuf)
         sleep(0)
 
+  def process_metadata(self, raw_metadata):
+    '''Parse raw metadata into clean JSON and fetch Last.fm data if possible. Needs
+    to be run as a seperate eventlet because of possible API calls.'''
+    metadata = {}
+    for line in raw_metadata.split(';'):
+      parts = line.rsplit('=', 1)
+      if len(parts) == 2:
+        metadata[parts[0]] = parts[1]
+
+      elif len(parts) == 1:
+        metadata[parts[0]] = None
+
+    if 'StreamTitle' in metadata:
+      artist, song = metadata['StreamTitle'][1:-1].split('-', 1)
+
+      metadata['artist'] = artist.strip()
+      metadata['song'] = song.strip()
+
+    if settings.get('Last.fm Integration'):
+      params = {
+        'method':'track.getInfo',
+        'artist':metadata['artist'],
+        'track':metadata['song'],
+        'api_key':settings['key'],
+        'format':'json'
+        }
+
+      resp = urllib2.urlopen('http://ws.audioscrobbler.com/2.0/?'+ urlencode(params))
+      last_fm_data = json.loads(resp.read())
+      resp.close()
+
+      if not last_fm_data.get('error'):
+        metadata['album_art'] = last_fm_data['track']['album']['image'][0]['#text']
+
+    self._metadata_json = json.dumps(metadata)
+    self._metadata_available.set()
+    self._metadata_available.clear()
+    sleep(0)
 
 def gen(encurl, url):
   '''The generator that we throw at clients for the .mp3 stream'''
@@ -107,6 +149,8 @@ def gen(encurl, url):
     stream = StreamHandler(url)
     streams[encurl] = stream
     spawn(stream.pump_forever)
+
+    print streams
 
   local_buf = ''
   while 1:
@@ -117,11 +161,6 @@ def gen(encurl, url):
     if len(local_buf) > 44998:
       yield local_buf
       local_buf = ''
-
-def process_metadata(raw_metadata):
-  '''Parse raw metadata into clean JSON and fetch Last.fm data if possible. Needs
-  to be run as a seperate eventlet because of possible API calls.'''
-  pass
 
 # b64 encoded stream URLs -> StreamHandler map shared by whole app.
 streams = {}
@@ -167,14 +206,15 @@ def stream(url):
   return Response(gen(encurl, url), mimetype='audio/mpeg')
 
 @app.route('/metadata/<stream>/d.json')
-def metadata(stream_url):
+def metadata(stream):
   '''Return json encoded metadata for the current track on this stream'''
-  stream = streams.get(stream_url)
+  stream = streams.get(stream)
   if not stream:
     return 'Fuck off pleb'
 
-  metadata = stream.read_metadata()
-  return Response(json.dumps(metadata), mimetype='application/json')
+  b = not request.args.get('initial')
+  metadata = stream.read_metadata(blocking=b)
+  return Response(metadata, mimetype='application/json')
 
 if __name__ == '__main__':
   try:

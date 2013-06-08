@@ -29,6 +29,7 @@
       }
 
       .track {
+        border-top: 1px solid #FE8315;
         width: 100%;
         margin-bottom: 10px;
         padding: 10px 0;
@@ -164,7 +165,8 @@
     <span id="cr-notice">&copy; 2013 Ryan Jenkins</span>
     <script>
       // Global vars to track play state
-      var audioPlayer = null
+      var audioPlayer = null,
+        initialMetaDataUpdate = true
 
       function startStream(encurl) {
         if (audioPlayer !== null) {
@@ -189,10 +191,10 @@
           // Actually the player controls div. I know I know, get off my case
           document.getElementById('player').style.display = 'block'
 
+          pollForMetadata()
           audioPlayer.removeEventListener(tmpListener)
         })
 
-        //pollForMetadata()
         document.location.hash = encurl
       }
 
@@ -226,9 +228,15 @@
 
       function pollForMetadata() {
         var url = unescape(document.location.hash.substr(1)),
-          xhr = new XMLHttpRequest()
+          xhr = new XMLHttpRequest(),
+          reqUrl = '/metadata/' + url + '/d.json'
 
-        xhr.open('GET', '/metadata/' + url + '/d.json', true);
+        if (initialMetaDataUpdate) {
+          reqUrl += '?initial=1'
+          initialMetaDataUpdate = false
+        }
+
+        xhr.open('GET', reqUrl, true);
         xhr.addEventListener("load", function () {
           var res = JSON.parse(this.responseText)
           if (res) {
