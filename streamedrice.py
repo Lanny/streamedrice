@@ -18,11 +18,14 @@ class RiceException(Exception):
   pass
 
 class StreamHandler(object):
-  def __init__(self, stream_url):
+  def __init__(self, stream_url, encurl):
     '''Open a connection to the remote stream and read through the headers.'''
     print stream_url
-    url_data = re.match(r'(http://)?(?P<host>.+?\.\w{2,5})(?P<path>/.+?)?:(?P<port>\d+)/?', stream_url)
+    url_data = re.match(r'(http://)?(?P<host>.+?\.\w{2,5})/?(?P<path>.*):?(?P<port>\d+)?/?', stream_url)
+    url_data = re.match(r'(http://)?(?P<host>(\w+\.?)+)(?P<path>/.+)?(:(?P<port>\d+))?/?', stream_url.strip())
     print url_data.groups()
+
+    self._encurl = encurl
 
     self._buf = ''
     self._metabuf = ''
@@ -30,15 +33,20 @@ class StreamHandler(object):
     self._chunk_read = 0
     self._subscribers = 0
 
+    self._turns_without_sub = 0
+
     self._cont = False
     self._data_available = Event()
     self._metadata_available = Event()
 
+    port = url_data.group('port') if url_data.group('port') else 80
+
     self._s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    self._s.connect((url_data.group('host'), int(url_data.group('port'))))
+    self._s.connect((url_data.group('host'), int(port)))
 
     path = url_data.group('path')
     if not path: path = '/'
+    else: path = '/' + path
 
     request = '\r\n'.join([
       'GET %s HTTP/1.1' % path,
@@ -89,21 +97,26 @@ class StreamHandler(object):
     it and publish to anyone who will listen. That includes metadata.'''
     self._cont = True
     while self._cont:
-      while (self._chunk_read < self._metaint):
-        self._buf = self._s.recv(self._metaint - self._chunk_read)
-        self._chunk_read += len(self._buf)
+      while (len(self._buf) < self._metaint):
+        self._buf += self._s.recv(self._metaint - len(self._buf))
 
-        # Check if there are any subscribers for this stream, if not we terminate
-        # this stream until someone new subscribes.
-        if self._subscribers < 1:
+      # Check if there are any subscribers for this stream, if not we terminate
+      # this stream until someone new subscribes.
+      if self._subscribers < 1:
+        self._turns_without_sub += 1
+        if self._turns_without_sub > 15:
           print 'No active subscribes, terminateing stream.'
+          del streams[self._encurl]
+          print streams
           return
 
-        self._data_available.set()
-        self._data_available.clear()
-        sleep(0)
-
-      self._chunk_read = 0
+      else:
+        self._turns_without_sub = 0
+          
+      self._data_available.set()
+      self._data_available.clear()
+      sleep(0)
+      self._buf = ''
 
       mlen = ord(self._s.recv(1))*16
       if mlen > 0:
@@ -111,10 +124,12 @@ class StreamHandler(object):
         while len(self._metabuf) < mlen:
           self._metabuf += self._s.recv(mlen - len(self._metabuf))
 
+        #print len(self._metabuf)
+        #print self._metabuf
         # Run this in another eventlet because we're probs going to make a last.fm
         # call and we don't want to get in the way of actual music loading.
-        spawn(self.process_metadata, self._metabuf)
-        sleep(0)
+        #spawn(self.process_metadata, self._metabuf)
+        #sleep(0)
 
   def process_metadata(self, raw_metadata):
     '''Parse raw metadata into clean JSON and fetch Last.fm data if possible. Needs
@@ -148,7 +163,10 @@ class StreamHandler(object):
       resp.close()
 
       if not last_fm_data.get('error'):
-        metadata['album_art'] = last_fm_data['track']['album']['image'][0]['#text']
+        try:
+          metadata['album_art'] = last_fm_data['track']['album']['image'][0]['#text']
+        except KeyError:
+          pass
 
     self._metadata_json = json.dumps(metadata)
     self._metadata_available.set()
@@ -159,7 +177,7 @@ def gen(encurl, url):
   '''The generator that we throw at clients for the .mp3 stream'''
   stream = streams.get(encurl)
   if not stream:
-    stream = StreamHandler(url)
+    stream = StreamHandler(url, encurl)
     streams[encurl] = stream
     spawn(stream.pump_forever)
 
@@ -171,7 +189,7 @@ def gen(encurl, url):
     # messages too quickly (I think)
     local_buf += stream.read_data()
 
-    if len(local_buf) > 44998:
+    if len(local_buf) > 24 * 1024:
       yield local_buf
       local_buf = ''
 

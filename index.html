@@ -324,6 +324,10 @@
         xhr.send('playlist_url='+ url);
       }
 
+      function parseDirectUrl() {
+        startStream(btoa(document.getElementById('shourcast-url').value))
+      }
+
       document.addEventListener('DOMContentLoaded', function ready() {
         if (document.location.hash) {
           // If there's a frag fire up the player
@@ -334,6 +338,8 @@
           if (e.keyCode == 13) { loadPlsFromUrl() }
         })
         document.getElementById('pls-url-submit').addEventListener('click', loadPlsFromUrl)
+
+        document.getElementById('shoutcast-submit').addEventListener('click', parseDirectUrl)
 
         document.getElementById('play-button').addEventListener('click', function(e) {
           if (document.getElementById('play-button').classList.contains('play')) {
