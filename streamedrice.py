@@ -18,8 +18,8 @@ CRLF = '\r\n'
 PLS_FORMAT = 0
 M3U_FORMAT = 1
 
-def split_n_pad(line):
-  pair = line.split(':', 1)
+def split_n_pad(line, delimiter=':'):
+  pair = line.split(delimiter, 1)
   pair += [None for _ in range(2 - len(pair))]
   
   return tuple(pair)
@@ -44,6 +44,7 @@ class StreamHandler(object):
     self._metadata_json = ''
     self._chunk_read = 0
     self._subscribers = 0
+    self._metaint = 0
 
     self._turns_without_sub = 0
 
@@ -65,8 +66,6 @@ class StreamHandler(object):
       '\r\n'
     ])
 
-    print request
-
     self._s.send(request)
 
     while '\r\n\r\n' not in self._buf:
@@ -75,6 +74,9 @@ class StreamHandler(object):
     raw_headers, self._buf = self._buf.split(CRLF+CRLF, 1)
 
     self._headers = dict(map(split_n_pad, raw_headers.split(CRLF)))
+
+    print '~'*80
+    print self._headers
 
     if not filter(lambda x: re.match(r'.+ 200 OK.*', x), self._headers.keys()):
       raise RiceException('HTTP Error connecting to new stream.', 
@@ -87,6 +89,9 @@ class StreamHandler(object):
         r_cause="no_metaint") 
 
     self._chunk_read = len(self._buf)
+
+  def has_metadata(self):
+    return bool(self._metaint)
 
   def read_data(self):
     '''Sleep until some music data is available forthis stream.'''
@@ -101,10 +106,11 @@ class StreamHandler(object):
 
   def read_metadata(self, blocking=True):
     '''Sleep until some metadata is available for this stream.'''
-    if blocking:
+    if not blocking and self._metadata_json:
+        return self._metadata_json
+    else:
       self._metadata_available.wait()
-
-    return self._metadata_json
+      return self._metadata_json
 
   def pump_forever(self):
     '''So long as the _cont flag is true and the socket remails open, read from
@@ -171,7 +177,7 @@ class StreamHandler(object):
         'track':metadata['song'],
         'api_key':settings['key'],
         'format':'json'
-        }
+      }
 
       resp = urllib2.urlopen('http://ws.audioscrobbler.com/2.0/?' + 
           urlencode(params))
@@ -222,8 +228,8 @@ def find_stream_url(pls_string):
     # Looks like we've got a .pls style file
     fields = {}
     for line in lines[1:]:
-      k, v = split_n_pad(line)
-      fields[k] = v.strip()
+      k, v = split_n_pad(line, '=')
+      fields[k] = v.strip() if v else None
 
     return fields['File1'].encode('Base64').strip(), PLS_FORMAT
 
@@ -245,12 +251,16 @@ def parse_pls():
     return 'pleb'
 
   url = request.form['playlist_url']
-  res = urllib2.urlopen(url)
-  stream_url, stream_format = find_stream_url(res.read())
-  res.close()
+  req = urllib2.urlopen(url)
+  stream_url, stream_format = find_stream_url(req.read())
+  req.close()
 
-  return Response(json.dumps({'url': stream_url, 'format': 'stream_format'}), 
-      mimetype='application/json')
+  res = {
+    'url': stream_url, 
+    'format': 'stream_format'
+  }
+
+  return Response(json.dumps(res), mimetype='application/json')
 
 @app.route('/parse-pls-file/', methods=['POST'])
 def parse_plse_file():
@@ -271,7 +281,13 @@ def metadata(stream):
   '''Return json encoded metadata for the current track on this stream'''
   stream = streams.get(stream)
   if not stream:
-    return 'Fuck off pleb'
+    res = json.dumps({'error': 'No such stream is running.'})
+    return Response(res, mimetype='application/json') 
+
+  if not stream.has_metadata():
+    res = json.dumps({'error': 'no_metadata'})
+
+    return Response(res, mimetype='application/json') 
 
   b = not request.args.get('initial')
   metadata = stream.read_metadata(blocking=b)
@@ -282,6 +298,7 @@ if __name__ == '__main__':
     f = open('settings.json', 'r')
     settings = json.load(f)
     f.close()
+    settings['Last.fm Integration'] = True
 
   except IOError:
     settings = {'Last.fm Integration':False}

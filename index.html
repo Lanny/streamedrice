@@ -282,8 +282,16 @@
 
         xhr.open('GET', reqUrl, true);
         xhr.addEventListener("load", function () {
+          console.log(this.responseText)
           var res = JSON.parse(this.responseText)
-          if (res) {
+          if (res.error) {
+            if (res.error == "no_metadata") {
+              return
+            } else {
+              alert("Metadata retreival failed with error: " + res.error)
+              return
+            }
+          } else if (res) {
             var el = document.createElement('div'),
               htmlString = ''
 
@@ -301,8 +309,6 @@
             var tracks = document.getElementById('tracks')
 
             tracks.insertBefore(el, tracks.firstChild)
-
-            console.log(res)
           }
 
           setTimeout(pollForMetadata, 500)
