@@ -45,6 +45,7 @@ class StreamHandler(object):
     self._chunk_read = 0
     self._subscribers = 0
     self._metaint = 0
+    self._stream_name = ''
 
     self._turns_without_sub = 0
 
@@ -74,9 +75,7 @@ class StreamHandler(object):
     raw_headers, self._buf = self._buf.split(CRLF+CRLF, 1)
 
     self._headers = dict(map(split_n_pad, raw_headers.split(CRLF)))
-
-    print '~'*80
-    print self._headers
+    self._stream_name = self._headers.get('icy-name', '')
 
     if not filter(lambda x: re.match(r'.+ 200 OK.*', x), self._headers.keys()):
       raise RiceException('HTTP Error connecting to new stream.', 
@@ -157,6 +156,10 @@ class StreamHandler(object):
     Needs to be run as a seperate eventlet because of possible API calls.'''
     metadata = {}
     for line in raw_metadata.split(';'):
+      if not filter(lambda x: x!='\0', line):
+        # Some streams will pad out their metadata with null bytes.
+        continue
+
       parts = line.rsplit('=', 1)
       if len(parts) == 2:
         metadata[parts[0]] = parts[1]
