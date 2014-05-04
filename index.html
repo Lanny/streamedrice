@@ -92,6 +92,12 @@
         float: right;
         margin-right: -5px;
       }
+      #stream-name {
+        font-weight: 200;
+        display: block;
+        text-align: center;
+        margin-bottom: 1em;
+      }
       #play-button {
         background-color: #132537;
         height: 100px;
@@ -174,6 +180,7 @@
     </div>
 
     <div id="player">
+      <h2 id="stream-name"></h2>
       <div id="play-button" class="pause">
         <div id="play-symbol"></div>
         <div id="pause-symbol">
@@ -292,6 +299,9 @@
               return
             }
           } else if (res) {
+            document.getElementById('stream-name').innerText = res.stream_name
+
+            // Construct a new dom element representing this new track.
             var el = document.createElement('div'),
               htmlString = ''
 

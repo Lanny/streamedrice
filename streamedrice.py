@@ -167,6 +167,8 @@ class StreamHandler(object):
       elif len(parts) == 1:
         metadata[parts[0]] = None
 
+    metadata['stream_name'] = self._stream_name
+
     if 'StreamTitle' in metadata:
       artist, song = metadata['StreamTitle'][1:-1].split('-', 1)
 
