@@ -14,16 +14,28 @@ from gevent.event import Event
 
 monkey.patch_all()
 
+CRLF = '\r\n'
+PLS_FORMAT = 0
+M3U_FORMAT = 1
+
+def split_n_pad(line):
+  pair = line.split(':', 1)
+  pair += [None for _ in range(2 - len(pair))]
+  
+  return tuple(pair)
+
 class RiceException(Exception):
-  pass
+  def __init__(*args, **kwargs):
+    if 'r_cause' in kwargs:
+      self.r_cause = kwargs['r_cause']
+      del kwargs['r_cause']
+
+    super(RiceException, self).__init__(*args, **kwargs)
 
 class StreamHandler(object):
-  def __init__(self, stream_url, encurl):
+  def __init__(self, stream_url, encurl, stream_format=PLS_FORMAT):
     '''Open a connection to the remote stream and read through the headers.'''
-    print stream_url
-    url_data = re.match(r'(http://)?(?P<host>.+?\.\w{2,5})/?(?P<path>.*):?(?P<port>\d+)?/?', stream_url)
-    url_data = re.match(r'(http://)?(?P<host>(\w+\.?)+)(?P<path>/.+)?(:(?P<port>\d+))?/?', stream_url.strip())
-    print url_data.groups()
+    url_data = re.match((r'(http://)?(?P<host>(\w+\.?)+)(:(?P<port>\d+))?(?P<path>/.+)?/?'), stream_url.strip())
 
     self._encurl = encurl
 
@@ -46,7 +58,6 @@ class StreamHandler(object):
 
     path = url_data.group('path')
     if not path: path = '/'
-    else: path = '/' + path
 
     request = '\r\n'.join([
       'GET %s HTTP/1.1' % path,
@@ -54,24 +65,27 @@ class StreamHandler(object):
       '\r\n'
     ])
 
-    print repr(request)
+    print request
 
     self._s.send(request)
 
     while '\r\n\r\n' not in self._buf:
       self._buf += self._s.recv(64)
 
-    raw_headers, self._buf = self._buf.split('\r\n\r\n', 1)
-    self.headers = raw_headers.split('\r\n')
+    raw_headers, self._buf = self._buf.split(CRLF+CRLF, 1)
 
-    for idx, header in enumerate(self.headers[1:]):
-      self.headers[idx+1] = tuple(header.split(':', 1))
+    self._headers = dict(map(split_n_pad, raw_headers.split(CRLF)))
 
-    print self.headers
-    if '200' not in self.headers[0]:
-      raise RiceException('HTTP Error: %s' % self.headers[0])
+    if not filter(lambda x: re.match(r'.+ 200 OK.*', x), self._headers.keys()):
+      raise RiceException('HTTP Error connecting to new stream.', 
+          r_cause="icy_error")
+    
+    try:
+      self._metaint = int(self._headers.get('icy-metaint', '0'))
+    except ValueError:
+      raise RiceException('Bad metaint: %s' % repr(self._headers['icy-metaint']),
+        r_cause="no_metaint") 
 
-    self._metaint = int(filter(lambda x: x[0] == 'icy-metaint', self.headers)[0][1])
     self._chunk_read = len(self._buf)
 
   def read_data(self):
@@ -105,9 +119,8 @@ class StreamHandler(object):
       if self._subscribers < 1:
         self._turns_without_sub += 1
         if self._turns_without_sub > 15:
-          print 'No active subscribes, terminateing stream.'
+          print 'No active subscribes, terminating stream.'
           del streams[self._encurl]
-          print streams
           return
 
       else:
@@ -118,22 +131,24 @@ class StreamHandler(object):
       sleep(0)
       self._buf = ''
 
-      mlen = ord(self._s.recv(1))*16
-      if mlen > 0:
-        self._metabuf = ''
-        while len(self._metabuf) < mlen:
-          self._metabuf += self._s.recv(mlen - len(self._metabuf))
+      # If metaint is set to 0 then we're probably reading a m3u string and
+      # there's to metadata to grab either way.
+      if self._metaint:
+        mlen = ord(self._s.recv(1))*16
+        if mlen > 0:
+          self._metabuf = ''
+          while len(self._metabuf) < mlen:
+            self._metabuf += self._s.recv(mlen - len(self._metabuf))
 
-        #print len(self._metabuf)
-        #print self._metabuf
-        # Run this in another eventlet because we're probs going to make a last.fm
-        # call and we don't want to get in the way of actual music loading.
-        #spawn(self.process_metadata, self._metabuf)
-        #sleep(0)
+          # Run this in another eventlet because we're probs going to make a 
+          # last.fm call and we don't want to get in the way of actual music 
+          # loading.
+          spawn(self.process_metadata, self._metabuf)
+          sleep(0)
 
   def process_metadata(self, raw_metadata):
-    '''Parse raw metadata into clean JSON and fetch Last.fm data if possible. Needs
-    to be run as a seperate eventlet because of possible API calls.'''
+    '''Parse raw metadata into clean JSON and fetch Last.fm data if possible. 
+    Needs to be run as a seperate eventlet because of possible API calls.'''
     metadata = {}
     for line in raw_metadata.split(';'):
       parts = line.rsplit('=', 1)
@@ -158,7 +173,8 @@ class StreamHandler(object):
         'format':'json'
         }
 
-      resp = urllib2.urlopen('http://ws.audioscrobbler.com/2.0/?'+ urlencode(params))
+      resp = urllib2.urlopen('http://ws.audioscrobbler.com/2.0/?' + 
+          urlencode(params))
       last_fm_data = json.loads(resp.read())
       resp.close()
 
@@ -181,8 +197,6 @@ def gen(encurl, url):
     streams[encurl] = stream
     spawn(stream.pump_forever)
 
-    print streams
-
   local_buf = ''
   while 1:
     # Build a buffer this side because Windows flips shit if you send small 
@@ -200,11 +214,26 @@ app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 54 * 1024
 
 def find_stream_url(pls_string):
-  '''Return the Base64 encoded stream url from a .pls file'''
-  stream_url = re.search('File1=(.+?)\n', pls_string).group(1)
-  stream_url = stream_url.encode('Base64')
+  '''Return the Base64 encoded stream url from a .pls or .m3u file and a
+  string indicating which it is.'''
+  lines = pls_string.split()
 
-  return stream_url.strip()
+  if lines[0] == '[playlist]':
+    # Looks like we've got a .pls style file
+    fields = {}
+    for line in lines[1:]:
+      k, v = split_n_pad(line)
+      fields[k] = v.strip()
+
+    return fields['File1'].encode('Base64').strip(), PLS_FORMAT
+
+  else:
+    # Let's assume this is a .m3u file
+    for line in lines:
+      if line[0] == '#':
+        continue
+      else:
+        return line.strip().encode('Base64').strip(), M3U_FORMAT
 
 @app.route('/')
 def index():
@@ -217,16 +246,17 @@ def parse_pls():
 
   url = request.form['playlist_url']
   res = urllib2.urlopen(url)
-  stream_url = find_stream_url(res.read())
+  stream_url, stream_format = find_stream_url(res.read())
+  res.close()
 
-  return Response(json.dumps(stream_url), mimetype='application/json')
+  return Response(json.dumps({'url': stream_url, 'format': 'stream_format'}), 
+      mimetype='application/json')
 
 @app.route('/parse-pls-file/', methods=['POST'])
 def parse_plse_file():
   pls_string = request.files['pls'].stream.read()
-  stream_url = find_stream_url(pls_string)
+  stream_url, stream_format = find_stream_url(pls_string)
 
-  print stream_url
   return redirect('/#' + stream_url)
 
 @app.route('/stream/<url>/s.mp3')
@@ -250,7 +280,7 @@ def metadata(stream):
 if __name__ == '__main__':
   try:
     f = open('settings.json', 'r')
-    settings = json.loads(f.read())
+    settings = json.load(f)
     f.close()
 
   except IOError:
